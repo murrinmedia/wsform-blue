@@ -610,7 +610,7 @@
 
 							'label' => __('Organization ID', 'ws-form-blue'),
 							'type'  => 'text',
-							'help'  => __('The Blue organization this form should create records in (e.g. cm01p6zbu1lemnyan5wtlbgxe for MurrinMedia).', 'ws-form-blue')
+							'help'  => __('The Blue organization this form should create records in. Find this in Blue under Organization Settings, or in the URL when viewing your org (blue.app/org/ORGANIZATION-ID/...).', 'ws-form-blue')
 						)
 					)
 				);
