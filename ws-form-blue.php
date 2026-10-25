@@ -4,7 +4,7 @@
  * Plugin Name: WS Form - Blue
  * Plugin URI: https://murrinmedia.com.au
  * Description: Sends WS Form submissions to Blue (blue.app) as records in a chosen workspace/database, via Blue's REST API. Settings: WS Form > Settings > Blue. Per-form: add a "Send to Blue" action.
- * Version: 1.0.0
+ * Version: 1.1.0
  * Author: MurrinMedia
  * Author URI: https://murrinmedia.com.au
  * License: GPL-2.0+
@@ -248,7 +248,7 @@
 					if(empty($blue_field_id) || !isset($field_lookup[$blue_field_id])) { continue; }
 
 					$value = isset($custom_map['action_' . $this->id . '_custom_mapping_value']) ? $custom_map['action_' . $this->id . '_custom_mapping_value'] : '';
-					$value = WS_Form_Common::parse_variables_process($value, $form, $submit, 'text/plain');
+					$value = self::parse_value($value, $form, $submit);
 					if($value === '') { continue; }
 
 					$built = self::build_field_value($field_lookup[$blue_field_id], $value);
@@ -256,7 +256,10 @@
 				}
 
 				// Title (supports merge tags, e.g. #field(8) #field(9))
-				$title = WS_Form_Common::parse_variables_process($this->title, $form, $submit, 'text/plain');
+				$title = self::parse_value($this->title, $form, $submit);
+
+				// Tidy separators left dangling by empty fields, e.g. " – Jo Smith"
+				$title = preg_replace('/^[\s\x{2013}\x{2014}\-|:,\x{00B7}]+|[\s\x{2013}\x{2014}\-|:,\x{00B7}]+$/u', '', (string) $title);
 				$title = trim((string) $title);
 				if($title === '') { $title = sprintf(__('New Lead - %s', 'ws-form-blue'), current_time('Y-m-d H:i')); }
 
@@ -279,6 +282,91 @@
 				}
 
 				return self::error(self::get_api_error_detail($api_response['raw']));
+			}
+
+			// Parse merge tags, plus #blue_submission (the whole submission, readable)
+			private function parse_value($value, $form, $submit) {
+
+				$value = (string) $value;
+				if($value === '') { return ''; }
+
+				$parsed = WS_Form_Common::parse_variables_process($value, $form, $submit, 'text/plain');
+
+				// WS Form leaves unknown tags alone, so swap ours in afterwards
+				if(strpos($parsed, '#blue_submission') !== false) {
+
+					$parsed = str_replace('#blue_submission', self::readable_submission($form, $submit), $parsed);
+				}
+
+				return trim((string) $parsed);
+			}
+
+			// The whole submission as "Label: value" lines. Repeatable sections
+			// are grouped by row (#1, #2 ...) instead of WS Form's comma-joined
+			// columns, which can't be read when the values contain commas.
+			private function readable_submission($form, $submit) {
+
+				$labels = array();
+				$types = array();
+
+				if(is_object($form) && method_exists('WS_Form_Common', 'get_fields_from_form')) {
+
+					foreach(WS_Form_Common::get_fields_from_form($form, true) as $field_id => $field) {
+
+						$labels[(int) $field_id] = $field->label;
+						$types[(int) $field_id] = $field->type;
+					}
+				}
+
+				$skip_types = array('submit', 'html', 'divider', 'spacer', 'message', 'texteditor', 'recaptcha', 'hcaptcha', 'turnstile', 'progress', 'tab_next', 'tab_previous', 'save', 'reset', 'clear', 'password', 'file', 'signature', 'mediacapture', 'section_add', 'section_delete', 'section_up', 'section_down', 'section_icons');
+
+				$meta = isset($submit->meta) ? (array) $submit->meta : array();
+
+				// Fields with per-row values (keys like field_28_2)
+				$repeated = array();
+				foreach($meta as $key => $m) {
+
+					if(is_array($m) && !empty($m['id']) && preg_match('/^field_\d+_\d+$/', (string) $key)) { $repeated[(int) $m['id']] = true; }
+				}
+
+				$lines = array();
+				$rows = array();
+
+				foreach($meta as $key => $m) {
+
+					if(!is_array($m) || empty($m['id']) || !array_key_exists('value', $m)) { continue; }
+
+					$field_id = (int) $m['id'];
+					$type = isset($m['type']) ? $m['type'] : (isset($types[$field_id]) ? $types[$field_id] : '');
+					if(in_array($type, $skip_types)) { continue; }
+
+					$row = preg_match('/^field_\d+_(\d+)$/', (string) $key, $match) ? (int) $match[1] : 0;
+					if(!$row && isset($repeated[$field_id])) { continue; } // Combined copy; use the per-row values
+
+					$value = $m['value'];
+					if(is_array($value)) {
+
+						$value = implode(', ', array_filter(array_map('trim', array_map('strval', array_filter($value, 'is_scalar'))), 'strlen'));
+					}
+					$value = trim((string) $value);
+					if($value === '') { continue; }
+
+					$line = (isset($labels[$field_id]) ? $labels[$field_id] : 'Field ' . $field_id) . ': ' . $value;
+
+					if($row) { $rows[$row][] = $line; } else { $lines[] = $line; }
+				}
+
+				ksort($rows);
+				$i = 0;
+				foreach($rows as $row_lines) {
+
+					$i++;
+					$lines[] = '';
+					if(count($rows) > 1) { $lines[] = '#' . $i; }
+					$lines = array_merge($lines, $row_lines);
+				}
+
+				return implode("\n", $lines);
 			}
 
 			// Convert a WS Form submit value into a Blue fieldValues entry, or false to skip
@@ -739,7 +827,7 @@
 
 						'label'            => __('Custom Mapping', 'ws-form-blue'),
 						'type'             => 'repeater',
-						'help'             => __('Map static values or merge tags to Blue fields.', 'ws-form-blue'),
+						'help'             => __('Map static values or merge tags to Blue fields. #blue_submission gives the whole submission, readable, with repeated sections grouped by row.', 'ws-form-blue'),
 						'meta_keys'        => array(
 
 							'action_' . $this->id . '_custom_mapping_value',
